@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.env
+backend/downloads/
+frontend/node_modules/
+frontend/dist/
+.playwright-cli/
+output/
+*.log

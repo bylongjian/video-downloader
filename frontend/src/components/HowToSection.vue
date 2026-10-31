@@ -1,0 +1,3 @@
+<template>
+<section class="section how-section" id="how-to-use"><div class="container"><div class="center-heading"><p class="kicker">LESS FRICTION, MORE CREATION</p><h2>简单三步，把好内容留下。</h2><p>不需要复杂设置，第一次用也很顺手。</p></div><div class="steps"><article><span class="step-index">01</span><Icon name="copy" class="step-icon" /><h3>复制视频链接</h3><p>在喜欢的平台找到视频，<br>复制地址栏或分享链接。</p></article><article><span class="step-index">02</span><Icon name="link" class="step-icon" /><h3>粘贴并解析</h3><p>把链接粘贴到输入框，<br>一键获取视频信息与 AI 总结。</p></article><article><span class="step-index">03</span><Icon name="download" class="step-icon" /><h3>下载，或者深入探索</h3><p>选择清晰度保存视频，<br>也可以阅读摘要、导图并向 AI 提问。</p></article></div></div></section>
+</template>
