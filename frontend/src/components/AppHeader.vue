@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from 'vue'
-defineProps({ workbench: Boolean })
-defineEmits(['home', 'start', 'notice'])
+defineProps({workbench:Boolean,user:Object,authReady:Boolean,authError:String,loggingOut:Boolean})
+defineEmits(['home','start','notice','login','logout','retry'])
 const open = ref(false)
 </script>
 
@@ -14,8 +14,8 @@ const open = ref(false)
         <a href="/" :class="{active:!workbench}" @click.prevent="$emit('home')">视频下载</a>
         <a href="/#features">功能亮点</a><a href="/#how-to-use">使用指南</a><a href="/#pricing">会员套餐</a>
       </nav>
-      <div class="header-actions"><button class="button ghost login-button" @click="$emit('notice','账号功能将在后续开放，当前视频下载和 AI 功能无需登录。')">登录</button><button class="button primary small" @click="$emit('start')">免费开始<Icon name="arrow-up-right" /></button></div>
+      <div class="header-actions"><span v-if="!authReady" class="muted tiny" role="status">恢复登录中…</span><template v-else-if="user"><span class="account-email" :title="user.email">{{user.email}}</span><button class="button ghost" :disabled="loggingOut" @click="$emit('logout')">{{loggingOut?'退出中…':'退出'}}</button></template><button v-else-if="authError" class="text-button tiny" @click="$emit('retry')">重试登录状态</button><button v-else class="button ghost login-button" @click="$emit('login')">登录</button><button class="button primary small" @click="$emit('start')">免费开始<Icon name="arrow-up-right" /></button></div>
       <button class="icon-button mobile-nav-toggle" :aria-label="open?'关闭导航':'打开导航'" :aria-expanded="open" @click="open=!open"><Icon :name="open?'x':'menu'" /></button>
-    </div><nav v-if="open" class="mobile-nav" aria-label="手机导航" @click="open=false"><a href="/" @click.prevent="$emit('home')">视频下载</a><a href="/#features">功能亮点</a><a href="/#how-to-use">使用指南</a><a href="/#pricing">会员套餐</a><a href="#" @click.prevent="$emit('notice','账号功能将在后续开放。当前无需登录即可使用。')">登录 · 后续开放</a></nav></header>
+    </div><nav v-if="open" class="mobile-nav" aria-label="手机导航" @click="open=false"><a href="/" @click.prevent="$emit('home')">视频下载</a><a href="/#features">功能亮点</a><a href="/#how-to-use">使用指南</a><a href="/#pricing">会员套餐</a><template v-if="user"><span class="account-email">{{user.email}}</span><button class="text-button" :disabled="loggingOut" @click="$emit('logout')">退出账号</button></template><button v-else-if="authReady" class="text-button" @click="$emit(authError?'retry':'login')">{{authError?'重试登录状态':'登录 / 注册'}}</button></nav></header>
   </div>
 </template>

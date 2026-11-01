@@ -1,3 +1,6 @@
+import {authHeaders,getToken} from './auth.js'
+import {invalidateSession} from '../composables/useAuth.js'
+
 export async function handleSSEStream(response, callbacks) {
   const reader=response.body.getReader()
   const decoder=new TextDecoder()
@@ -40,22 +43,36 @@ export async function handleSSEStream(response, callbacks) {
 }
 
 async function stream(path, body, callbacks, signal) {
+  const token=getToken()
   const response=await fetch(`/api/${path}`,{
-    method:'POST',headers:{'Content-Type':'application/json',Accept:'text/event-stream'},
+    method:'POST',headers:{'Content-Type':'application/json',Accept:'text/event-stream',...authHeaders()},
     body:JSON.stringify(body),signal,
   })
   if(!response.ok) {
+    if(response.status===401)invalidateSession(token)
     let result
     try {result=await response.json()}
     catch {throw new Error(`AI 服务响应异常（HTTP ${response.status}），请稍后重试。`)}
-    throw new Error(result.error || result.detail || `请求失败（${response.status}）`)
+    throw Object.assign(new Error(result.error || result.detail || `请求失败（${response.status}）`),{status:response.status,code:result.code,quota:result.quota})
   }
   if(!response.headers.get('content-type')?.includes('text/event-stream'))throw new Error('AI 服务未返回有效事件流，请重试。')
+  callbacks.start?.()
   await handleSSEStream(response,callbacks)
 }
 
 export function summarizeVideo(url,language='zh',callbacks={},signal) {
   return stream('summarize',{url,language},callbacks,signal)
+}
+
+export async function fetchSummaryResult(url,language='zh',signal) {
+  const token=getToken()
+  const response=await fetch('/api/summarize/result?'+new URLSearchParams({url,language}),{method:'GET',headers:authHeaders(),signal})
+  if(response.status===401)invalidateSession(token)
+  let result
+  try {result=await response.json()}
+  catch {throw new Error(`保存结果暂不可用（HTTP ${response.status}），请重试恢复。`)}
+  if(!response.ok)throw Object.assign(new Error(result.error||'保存结果暂不可用，请重试恢复。'),{status:response.status,code:result.code})
+  return result.data
 }
 
 export function chatWithVideo(url,question,subtitleText='',callbacks={},signal,history=[]) {

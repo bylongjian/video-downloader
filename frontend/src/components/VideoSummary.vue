@@ -1,20 +1,47 @@
 <script setup>
-import { computed, ref, nextTick, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, defineAsyncComponent, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { summarizeVideo, chatWithVideo } from '../api/summarize.js'
+import { summarizeVideo, chatWithVideo, fetchSummaryResult } from '../api/summarize.js'
 import { saveFile, safeFilename, subtitleFile } from '../downloads.js'
+import {useAuth,updateQuota} from '../composables/useAuth.js'
 
 const MindmapView=defineAsyncComponent(()=>import('./MindmapView.vue'))
 const props=defineProps({videoUrl:{type:String,required:true},videoTitle:String})
-defineEmits(['notice'])
+const emit=defineEmits(['notice','login'])
+const {user,quota,authReady,authError,sessionVersion,restoreSession,refreshQuota}=useAuth()
 const tabs=[['summary','file-text','总结摘要'],['subtitle','captions','字幕文本'],['mindmap','git-branch','思维导图'],['qa','message-circle','AI 问答']]
 const active=ref(tabs.some(tab=>tab[0]===location.hash.slice(1))?location.hash.slice(1):'summary')
 const tabButtons=ref([]),loading=ref(false),status=ref('等待开始'),error=ref('')
 const subtitle=ref(null),summary=ref(''),mindmap=ref(''),expanded=ref(false),subtitleFormat=ref('srt')
 const messages=ref([]),question=ref(''),chatBusy=ref(false),chatList=ref(null)
 const notification=ref('')
-let summaryController,chatController,run=0,toastTimer
+const restoreFailed=ref(false)
+let summaryController,chatController,run=0,toastTimer,attempted=false,lastSuccessful=null
+const needsLogin=computed(()=>!authReady.value||!user.value)
+const resetLabel=computed(()=>quota.value?new Date(quota.value.reset_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'北京时间次日零点')
+function isCurrent(current,version){return current===run&&version===sessionVersion.value}
+function quotaMessage(kind){
+  const item=quota.value?.[kind]
+  if(!item)return '额度暂不可用，请刷新额度后重试。'
+  return item.used>=item.limit?`今日${kind==='summary'?'总结':'问答'}次数已用完，将于北京时间 ${resetLabel.value} 恢复。`:'可用名额正在其他请求中处理，请等待后刷新额度。'
+}
+function streamFailure(raw){const result=JSON.parse(raw);return result.message+(['NO_SUBTITLE','AI_FAILED'].includes(result.code)?' 本次未完整生成，不计成功次数。':'')}
+function showSavedResult(result){subtitle.value=result.subtitle;summary.value=result.summary;mindmap.value=result.mindmap}
+function keepPreviousResult(){if(lastSuccessful){showSavedResult(lastSuccessful);status.value='已保留上次成功结果'}}
+async function restoreSummary(){
+  if(!authReady.value||!user.value||loading.value)return
+  attempted=true;restoreFailed.value=false;error.value='';loading.value=true;status.value='正在恢复保存结果'
+  const current=++run,version=sessionVersion.value,controller=new AbortController();summaryController=controller
+  try {
+    const result=await fetchSummaryResult(props.videoUrl,'zh',controller.signal)
+    if(!isCurrent(current,version))return
+    if(result){lastSuccessful=result;showSavedResult(result);status.value='已恢复保存结果'}
+    else {loading.value=false;await startSummarize()}
+  } catch(cause){
+    if(isCurrent(current,version)&&!controller.signal.aborted){restoreFailed.value=true;error.value='恢复已有结果失败，请重试恢复；不会自动重新生成或扣次。'+cause.message;status.value='等待重试恢复'}
+  } finally {if(isCurrent(current,version))loading.value=false}
+}
 const hasSubtitles=computed(()=>!!subtitle.value?.has_subtitle)
 const noSubtitles=computed(()=>subtitle.value?.has_subtitle===false)
 const segments=computed(()=>subtitle.value?.segments || [])
@@ -42,20 +69,28 @@ function tabKey(event,index) {
   event.preventDefault();switchTab(tabs[next][0]);tabButtons.value[next].focus()
 }
 async function startSummarize() {
+  if(!authReady.value)return
+  if(!user.value){emit('login');return}
+  if(loading.value)return
+  attempted=true
+  restoreFailed.value=false
+  if(!quota.value||quota.value.summary.remaining<=0){error.value=quotaMessage('summary');status.value='等待可用额度';return}
   summaryController?.abort();chatController?.abort()
-  const controller=new AbortController(),current=++run;summaryController=controller
+  const controller=new AbortController(),current=++run,version=sessionVersion.value;summaryController=controller
   loading.value=true;error.value='';summary.value='';mindmap.value='';subtitle.value=null
   messages.value=[];chatBusy.value=false;expanded.value=false;status.value='正在提取字幕'
   try {
     await summarizeVideo(props.videoUrl,'zh',{
-      subtitle:data=>{if(current!==run)return;subtitle.value=JSON.parse(data);status.value=hasSubtitles.value?'AI 正在整理':'暂无可用字幕'},
-      summary:data=>{if(current===run)summary.value+=JSON.parse(data)},
-      mindmap:data=>{if(current===run)mindmap.value=JSON.parse(data).markdown},
-      done:()=>{if(current===run)status.value='已整理完成'},
-      error:data=>{if(current===run){error.value=JSON.parse(data).message;status.value=noSubtitles.value?'暂无可用字幕':'生成暂时中断'}},
+      start:()=>{if(isCurrent(current,version))refreshQuota()},
+      subtitle:data=>{if(!isCurrent(current,version))return;subtitle.value=JSON.parse(data);status.value=hasSubtitles.value?'AI 正在整理':'暂无可用字幕'},
+      summary:data=>{if(isCurrent(current,version))summary.value+=JSON.parse(data)},
+      mindmap:data=>{if(isCurrent(current,version))mindmap.value=JSON.parse(data).markdown},
+      quota:data=>{if(isCurrent(current,version))updateQuota(JSON.parse(data),version)},
+      done:()=>{if(isCurrent(current,version)){lastSuccessful={subtitle:subtitle.value,summary:summary.value,mindmap:mindmap.value};status.value='已整理完成'}},
+      error:data=>{if(isCurrent(current,version)){error.value=streamFailure(data);status.value=noSubtitles.value?'暂无可用字幕':'生成暂时中断';keepPreviousResult()}},
     },controller.signal)
-  } catch(cause) {if(current===run&&!controller.signal.aborted){error.value=cause.message;status.value='生成暂时中断'}}
-  finally {if(current===run)loading.value=false}
+  } catch(cause) {if(isCurrent(current,version)&&!controller.signal.aborted){error.value=cause.message;status.value='生成暂时中断';if(cause.quota)updateQuota(cause.quota,version);keepPreviousResult()}}
+  finally {if(isCurrent(current,version)){loading.value=false;refreshQuota()}}
 }
 async function copySummary() {
   try {await navigator.clipboard.writeText(summary.value);toast('已复制到剪贴板')}
@@ -70,30 +105,38 @@ async function scrollChat() {await nextTick();if(chatList.value)chatList.value.s
 async function sendQuestion(raw=question.value) {
   const text=raw.trim()
   if(!text||chatBusy.value||!hasSubtitles.value)return
-  const current=run,controller=new AbortController();chatController=controller
+  if(!user.value){emit('login');return}
+  if(!quota.value||quota.value.chat.remaining<=0){toast(quotaMessage('chat'));return}
+  const current=run,version=sessionVersion.value,controller=new AbortController();chatController=controller
   const history=messages.value.filter(message=>!message.error&&message.content).slice(-20).map(message=>({role:message.role,content:message.content.slice(0,6000)}))
   messages.value.push({role:'user',content:text},{role:'assistant',content:'',loading:true,error:''})
   const answer=messages.value.at(-1)
   question.value='';chatBusy.value=true;scrollChat()
   try {
     await chatWithVideo(props.videoUrl,text,subtitle.value.full_text.slice(0,15000),{
-      answer:data=>{if(current===run){answer.content+=JSON.parse(data);scrollChat()}},
-      done:()=>{if(current===run)answer.loading=false},
-      error:data=>{if(current===run)answer.error=JSON.parse(data).message},
+      start:()=>{if(isCurrent(current,version))refreshQuota()},
+      answer:data=>{if(isCurrent(current,version)){answer.content+=JSON.parse(data);scrollChat()}},
+      quota:data=>{if(isCurrent(current,version))updateQuota(JSON.parse(data),version)},
+      done:()=>{if(isCurrent(current,version))answer.loading=false},
+      error:data=>{if(isCurrent(current,version))answer.error=streamFailure(data)},
     },controller.signal,history)
-  } catch(cause) {if(current===run&&!controller.signal.aborted)answer.error=cause.message}
-  finally {if(current===run){answer.loading=false;chatBusy.value=false;scrollChat()}}
+  } catch(cause) {if(isCurrent(current,version)&&!controller.signal.aborted){answer.error=cause.message;if(cause.quota)updateQuota(cause.quota,version)}}
+  finally {if(isCurrent(current,version)){answer.loading=false;chatBusy.value=false;scrollChat();refreshQuota()}}
 }
 function retryQuestion(index) {const text=messages.value[index-1].content;messages.value.splice(index-1,2);sendQuestion(text)}
 function questionKey(event) {if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();sendQuestion()}}
 function hashChanged() {const id=location.hash.slice(1);if(tabs.some(tab=>tab[0]===id))active.value=id}
-onMounted(()=>{window.addEventListener('hashchange',hashChanged);startSummarize()})
+watch([authReady,user],()=>{if(authReady.value&&user.value&&!attempted)restoreSummary()},{immediate:true})
+onMounted(()=>{window.addEventListener('hashchange',hashChanged)})
 onUnmounted(()=>{run++;summaryController?.abort();chatController?.abort();clearTimeout(toastTimer);window.removeEventListener('hashchange',hashChanged)})
 </script>
 
 <template>
   <section class="card ai-card" aria-label="AI 视频学习助手" :aria-busy="loading">
     <div class="ai-heading"><span class="ai-brand-icon"><Icon name="sparkles" /></span><div><h2>AI 学习助手</h2><p>让每一分钟的内容，都有收获</p></div><span class="ai-status" :class="{ready:status==='已整理完成'}" role="status">{{status}}</span></div>
+    <div v-if="needsLogin" class="empty-state auth-gate" role="status"><span class="ai-brand-icon"><Icon name="sparkles" /></span><h3>{{!authReady?'正在恢复登录状态…':authError?'暂时无法确认登录状态':'登录后，读懂这段视频。'}}</h3><p>{{!authReady?'视频解析和下载可照常使用。':authError||'每天可成功生成 3 次总结、获得 10 次问答；失败不计次。'}}</p><button v-if="authReady" class="button primary" @click="authError?restoreSession():emit('login')">{{authError?'重试恢复登录':'登录后生成总结'}}</button></div>
+    <template v-else>
+    <div class="quota-panel" aria-live="polite"><template v-if="quota"><div class="quota-counters"><span>总结剩余 <b>{{quota.summary.remaining}} / {{quota.summary.limit}}</b><small v-if="quota.summary.reserved"> · {{quota.summary.reserved}} 次处理中</small></span><span>问答剩余 <b>{{quota.chat.remaining}} / {{quota.chat.limit}}</b><small v-if="quota.chat.reserved"> · {{quota.chat.reserved}} 次处理中</small></span></div><p>北京时间 {{resetLabel}} 恢复 · 已保存的结果可免费恢复；首次总结或主动重新总结，完整成功才使用 1 次额度。</p></template><p v-else role="alert">额度暂不可用，已有内容仍可阅读。</p><button class="text-button tiny" @click="refreshQuota">刷新额度</button></div>
     <div class="ai-tabs" role="tablist" aria-label="AI 内容视图"><button v-for="([id,icon,label],index) in tabs" :id="'tab-'+id" ref="tabButtons" :key="id" role="tab" :aria-controls="'panel-'+id" :aria-selected="active===id" :tabindex="active===id?0:-1" @click="switchTab(id)" @keydown="tabKey($event,index)"><Icon :name="icon" />{{label}}</button></div>
     <div class="ai-content">
       <div v-show="active==='summary'" id="panel-summary" role="tabpanel" aria-labelledby="tab-summary">
@@ -105,7 +148,7 @@ onUnmounted(()=>{run++;summaryController?.abort();chatController?.abort();clearT
           <div v-if="loading" class="loading-caption"><span class="spinner"></span>{{mindmap?'正在完成整理…':'正在整理摘要与思维导图…'}}</div>
           <p class="generated-note"><Icon name="info" />{{subtitle?.full_text.length>15000?'本次分析字幕前 15000 字符，重要信息请结合原视频核对。':'AI 基于字幕生成，重要信息请结合原视频核对。'}}</p>
         </template>
-        <div v-if="error" :class="summary?'inline-error':'empty-state'" role="alert"><template v-if="!summary"><span class="empty-illustration"><Icon :name="noSubtitles?'captions':'alert-circle'" /></span><h3>{{noSubtitles?'这个视频，还没有可用字幕。':'刚才的思路，暂时中断了。'}}</h3></template><p>{{error}}</p><button class="button outline" style="margin-top:16px" :disabled="loading" @click="startSummarize"><Icon name="rotate-cw" />重新生成</button></div>
+        <div v-if="error" :class="summary?'inline-error':'empty-state'" role="alert"><template v-if="!summary"><span class="empty-illustration"><Icon :name="noSubtitles?'captions':'alert-circle'" /></span><h3>{{noSubtitles?'这个视频，还没有可用字幕。':'刚才的思路，暂时中断了。'}}</h3></template><p>{{error}}</p><button class="button outline" style="margin-top:16px" :disabled="loading" @click="restoreFailed?restoreSummary():startSummarize()"><Icon name="rotate-cw" />{{restoreFailed?'重试恢复':'重新生成'}}</button></div>
       </div>
       <div v-show="active==='subtitle'" id="panel-subtitle" role="tabpanel" aria-labelledby="tab-subtitle">
         <template v-if="hasSubtitles"><div class="subtitle-toolbar"><div><p>共 {{segments.length}} 条字幕</p><span class="tag">{{subtitle.subtitle_type==='manual'?'人工字幕':'自动字幕'}} · {{subtitle.language}}</span></div><div class="subtitle-actions"><label class="sr-only" for="subtitle-format">字幕导出格式</label><select id="subtitle-format" v-model="subtitleFormat"><option value="srt">SRT 字幕</option><option value="vtt">VTT 字幕</option><option value="txt">TXT 文本</option></select><button class="button outline" @click="exportSubtitles"><Icon name="download" />下载字幕</button></div></div><div class="subtitle-list"><div v-for="(segment,index) in visibleSegments" :key="index" class="subtitle-row"><span class="time-badge">{{stamp(segment.start)}}</span><span>{{segment.text}}</span></div></div><button v-if="segments.length>6" class="subtitle-more" @click="expanded=!expanded">{{expanded?'收起字幕':'展开全部 '+segments.length+' 条字幕'}} <Icon :name="expanded?'chevron-up':'chevron-down'" /></button></template>
@@ -120,7 +163,8 @@ onUnmounted(()=>{run++;summaryController?.abort();chatController?.abort();clearT
         <div v-else class="empty-state"><span v-if="loading" class="spinner"></span><span v-else class="empty-illustration"><Icon name="message-circle" /></span><h3>{{loading?'正在准备视频内容…':'有了字幕，才能继续问。'}}</h3><p>{{loading?'字幕获取后，你就可以针对视频提问。':'当前没有可用字幕，无法基于视频回答问题。你仍可下载视频。'}}</p></div>
       </div>
     </div>
-    <div class="ai-footer"><span><Icon name="sparkles" />AI 生成内容仅供参考</span><span>账号与额度后续开放</span><button class="text-button tiny" @click="$emit('notice','VIP 与每日额度将在后续阶段开放。当前核心功能无需登录。')">升级 VIP<Icon name="arrow-up-right" /></button></div>
+    </template>
+    <div class="ai-footer"><span><Icon name="sparkles" />AI 生成内容仅供参考</span><span>视频解析与下载无需登录</span><button class="text-button tiny" @click="$emit('notice','VIP 将在后续开放，当前不提供开通。免费账号每天有 3 次总结和 10 次问答。')">VIP 后续开放<Icon name="arrow-up-right" /></button></div>
   </section>
   <Teleport to="body"><div v-if="notification" class="toast-stack" role="status" aria-live="polite"><div class="toast"><Icon name="info" /><span>{{notification}}</span><button aria-label="关闭提示" @click="notification=''"><Icon name="x" /></button></div></div></Teleport>
 </template>

@@ -4,6 +4,9 @@ __pycache__/
 *.py[cod]
 .env
 backend/downloads/
+backend/data/
+*.db-wal
+*.db-shm
 frontend/node_modules/
 frontend/dist/
 .playwright-cli/

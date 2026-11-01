@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import AppHeader from './components/AppHeader.vue'
 import AppFooter from './components/AppFooter.vue'
 import HeroSection from './components/HeroSection.vue'
@@ -10,6 +10,8 @@ import FaqSection from './components/FaqSection.vue'
 import BottomCta from './components/BottomCta.vue'
 import VideoResult from './components/VideoResult.vue'
 import VideoSummary from './components/VideoSummary.vue'
+import AuthModal from './components/AuthModal.vue'
+import {useAuth} from './composables/useAuth.js'
 import { parseVideo, downloadVideo } from './api/video.js'
 
 const workbench=ref(location.pathname.startsWith('/workbench'))
@@ -17,9 +19,28 @@ const currentUrl=ref(new URLSearchParams(location.search).get('url') || '')
 const video=ref(null), loading=ref(false), error=ref('')
 const downloading=ref(false), downloadStatus=ref(''), downloadError=ref(''), downloadWarning=ref('')
 const hero=ref(null), notice=ref(''), noticeDialog=ref(null)
+const auth=useAuth(),authVisible=ref(false),loggingOut=ref(false)
+async function logout(){
+  loggingOut.value=true
+  try {await auth.logout()}catch(cause){showNotice(cause.message)}
+  finally {loggingOut.value=false}
+}
 let parseController, downloadController
+let quotaTimer
+function scheduleQuotaRefresh(){
+  clearTimeout(quotaTimer)
+  if(!auth.user.value||!auth.quota.value)return
+  const delay=Date.parse(auth.quota.value.reset_at)-Date.parse(auth.quota.value.server_time)
+  quotaTimer=setTimeout(()=>auth.refreshQuota(),Math.max(1000,delay+250))
+}
+watch(()=>auth.quota.value,scheduleQuotaRefresh)
+function focus(){
+  if(!auth.authReady.value)return
+  if(auth.user.value)auth.refreshQuota()
+  else if(auth.authError.value)auth.restoreSession()
+}
 
-async function showNotice(message='VIP 与每日额度将在后续阶段开放。当前核心功能无需登录。') {
+async function showNotice(message='VIP 将在后续开放，当前不提供开通。视频解析和下载无需登录。') {
   notice.value=message
   await nextTick()
   if (!noticeDialog.value.open) noticeDialog.value.showModal()
@@ -61,13 +82,13 @@ function popstate() {
   if(location.pathname.startsWith('/workbench')&&url) parse(url,false)
   else {cancel();workbench.value=false;video.value=null;loading.value=false}
 }
-onMounted(()=>{window.addEventListener('popstate',popstate);if(workbench.value&&currentUrl.value)parse(currentUrl.value,false)})
-onUnmounted(()=>{cancel();window.removeEventListener('popstate',popstate)})
+onMounted(()=>{auth.restoreSession();window.addEventListener('popstate',popstate);window.addEventListener('focus',focus);if(workbench.value&&currentUrl.value)parse(currentUrl.value,false)})
+onUnmounted(()=>{cancel();clearTimeout(quotaTimer);window.removeEventListener('popstate',popstate);window.removeEventListener('focus',focus)})
 </script>
 
 <template>
   <a class="skip-link" href="#main">跳到主要内容</a>
-  <AppHeader :workbench="workbench" @home="home" @start="start" @notice="showNotice" />
+  <AppHeader :workbench="workbench" :user="auth.user.value" :auth-ready="auth.authReady.value" :auth-error="auth.authError.value" :logging-out="loggingOut" @login="authVisible=true" @logout="logout" @retry="auth.restoreSession" @home="home" @start="start" @notice="showNotice" />
   <main v-if="!workbench" id="main"><HeroSection ref="hero" @parse="parse" @notice="showNotice" /><FeatureSection @example="example" /><HowToSection /><PricingSection @start="start" @notice="showNotice" /><FaqSection /><BottomCta /></main>
   <main v-else id="main" class="workspace-main"><div class="container">
     <div class="workspace-topline"><a href="/" class="back-link" @click.prevent="home"><Icon name="arrow-left" />返回首页</a><div class="prototype-label"><span class="status-dot"></span>从保存，到理解</div></div>
@@ -75,9 +96,10 @@ onUnmounted(()=>{cancel();window.removeEventListener('popstate',popstate)})
     <div class="workspace-heading"><div><p class="kicker">YOUR VIDEO, REIMAGINED</p><h1>把好内容，变成你的知识。</h1></div></div>
     <div v-if="loading" aria-live="polite"><div class="loading-caption"><span class="spinner"></span>正在识别平台并获取视频信息…</div><div class="parse-loading"><div v-for="i in 2" :key="i" class="card skeleton-card"><div class="skeleton" :class="i===1?'cover-skeleton':'short'"></div><div class="skeleton medium"></div><div class="skeleton short"></div><div class="skeleton"></div></div></div></div>
     <div v-else-if="error" class="card empty-state" role="alert"><span class="empty-illustration"><Icon name="link" /></span><h3>这段视频，暂时没找到。</h3><p>{{error}}</p><button class="button primary" @click="parse(currentUrl)"><Icon name="rotate-cw" />重新解析</button><button class="text-button" @click="example">换一个视频</button></div>
-    <div v-else-if="video" class="workspace-grid"><VideoResult :key="currentUrl" :video="video" :downloading="downloading" :status="downloadStatus" :error="downloadError" :warning="downloadWarning" @download="download" /><VideoSummary :key="currentUrl" :video-url="currentUrl" :video-title="video.title" @notice="showNotice" /></div>
+    <div v-else-if="video" class="workspace-grid"><VideoResult :key="currentUrl" :video="video" :downloading="downloading" :status="downloadStatus" :error="downloadError" :warning="downloadWarning" @download="download" /><VideoSummary :key="currentUrl+':'+auth.sessionVersion.value" :video-url="currentUrl" :video-title="video.title" @login="authVisible=true" @notice="showNotice" /></div>
     <div v-else class="card empty-state"><h3>从一个视频链接开始。</h3><p>在上方粘贴视频链接，查看视频信息并选择格式下载。</p></div>
   </div></main>
   <AppFooter />
+  <AuthModal :visible="authVisible" @close="authVisible=false" />
   <dialog ref="noticeDialog" aria-labelledby="notice-title"><button class="icon-button dialog-close" aria-label="关闭提示" @click="noticeDialog.close()"><Icon name="x" /></button><div class="dialog-inner"><p class="dialog-eyebrow">MORE ROOM TO EXPLORE</p><h2 id="notice-title">留一点期待。</h2><p class="dialog-description notice-description">{{notice}}</p><button class="button primary full" style="margin-top:24px" @click="noticeDialog.close()">继续探索<Icon name="arrow-right" /></button></div></dialog>
 </template>

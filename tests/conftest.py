@@ -6,12 +6,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def public_dns(monkeypatch):
+def public_dns(monkeypatch, tmp_path_factory):
     # 测试不能加载开发者 .env 中的真实密钥，也不能消耗模型额度。
     monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))])
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("ALLOW_PROXY_FAKE_IP", raising=False)
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path_factory.mktemp("accounts") / "accounts.db"))
+    monkeypatch.setenv("JWT_SECRET", "test-only-secret-with-at-least-32-bytes")
 
 
 @pytest.fixture
@@ -50,6 +52,12 @@ def client():
 
     with TestClient(app) as value:
         yield value
+
+
+@pytest.fixture
+def auth_headers(client):
+    data = client.post('/api/auth/register', json={'email': 'ai-reader@example.com', 'password': 'password123'}).json()['data']
+    return {'Authorization': 'Bearer ' + data['token']}
 
 
 @pytest.fixture

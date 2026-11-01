@@ -3,13 +3,15 @@
 import asyncio
 import os
 import shutil
+import sqlite3
+import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -18,6 +20,8 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from .downloader import VideoDownloader, VideoError, validate_public_url
+from .database import init_db
+from .quota import QuotaError, release_expired_usage
 
 load_dotenv(Path(__file__).parent / ".env")
 downloader = VideoDownloader()
@@ -25,19 +29,29 @@ downloader = VideoDownloader()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if len(os.getenv("JWT_SECRET", "").encode("utf-8")) < 32:
+        raise RuntimeError("请在 backend/.env 配置至少 32 字节的随机 JWT_SECRET 后重启")
+    await run_in_threadpool(init_db)
+    await run_in_threadpool(release_expired_usage)
     async def cleanup():
         while True:
             await run_in_threadpool(downloader.cleanup_expired)
-            await asyncio.sleep(3600)
+            try:
+                await run_in_threadpool(release_expired_usage)
+            except sqlite3.OperationalError:
+                logging.getLogger(__name__).exception('额度清理暂不可用，将在下一轮重试')
+            await asyncio.sleep(60)
     task = asyncio.create_task(cleanup())
-    yield
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="SaveAny 视频下载 API", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type"], expose_headers=["Content-Disposition", "X-Download-Warning"])
+app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"], expose_headers=["Content-Disposition", "X-Download-Warning"])
 
 
 class ParseRequest(BaseModel):
@@ -55,7 +69,26 @@ async def video_error_handler(request, exc: VideoError):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request, exc: RequestValidationError):
+    if request.url.path.startswith("/api/auth/"):
+        return JSONResponse(status_code=422, content={"success": False, "code": "VALIDATION_ERROR", "error": "邮箱格式不正确或密码不符合要求：8～50 个字符，UTF-8 编码不超过 72 字节"})
     return JSONResponse(status_code=422, content={"success": False, "error": "请求参数不正确，请检查链接或所选格式"})
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(request, exc: HTTPException):
+    detail = exc.detail if isinstance(exc.detail, dict) else {"error": exc.detail}
+    return JSONResponse(status_code=exc.status_code, content={"success": False, **detail}, headers=exc.headers)
+
+
+@app.exception_handler(sqlite3.OperationalError)
+async def database_error_handler(request, exc: sqlite3.OperationalError):
+    logging.getLogger(__name__).error("账号数据库暂不可用", exc_info=exc)
+    return JSONResponse(status_code=503, content={"success": False, "code": "ACCOUNT_SERVICE_UNAVAILABLE", "error": "账号服务暂不可用，请稍后重试"})
+
+
+@app.exception_handler(QuotaError)
+async def quota_error_handler(request, exc: QuotaError):
+    return JSONResponse(status_code=429, content={"success": False, "code": exc.code, "error": str(exc), "quota": exc.quota})
 
 
 @app.get("/api/health")
@@ -110,3 +143,6 @@ def proxy_thumbnail(url: str):
 from .api_summarize import router
 
 app.include_router(router)
+from .api_auth import router as auth_router
+
+app.include_router(auth_router)
