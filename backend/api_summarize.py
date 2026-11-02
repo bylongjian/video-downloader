@@ -6,7 +6,7 @@ from typing import Literal
 import logging
 import sqlite3
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,9 @@ def stream_resources() -> Iterator[ExitStack]:
 class SummarizeRequest(BaseModel):
     url: str = Field(min_length=1, max_length=4096)
     language: str = Field(default="zh", min_length=1, max_length=20)
+    video_title: str = Field(default='', max_length=300)
+    platform: str = Field(default='', max_length=100)
+    transcript_id: str | None = Field(default=None,min_length=1,max_length=200)
 
 
 class ChatMessage(BaseModel):
@@ -52,11 +55,18 @@ def summarize_video(req: SummarizeRequest, reservation: UsageReservation = Depen
     try:
         ensure_active(reservation)
         validate_public_url(req.url)
-        subtitle = SubtitleExtractor().extract(req.url)
+        if req.transcript_id:
+            from .transcriber import get_transcription_by_id
+            saved = get_transcription_by_id(reservation.user_id,req.transcript_id)
+            if saved['url'] != req.url:
+                raise HTTPException(404,{'code':'SOURCE_NOT_FOUND','error':'转写来源不存在或无权访问'})
+            subtitle = saved['subtitle']
+        else:
+            subtitle = SubtitleExtractor().extract(req.url)
         ensure_active(reservation)
         yield ServerSentEvent(event="subtitle", data=subtitle)
         if not subtitle["has_subtitle"]:
-            yield ServerSentEvent(event='error', data={'code': 'NO_SUBTITLE', 'message': '该视频没有可用字幕，暂不支持语音转文字；仍可下载视频'})
+            yield ServerSentEvent(event='error', data={'code': 'NO_SUBTITLE', 'message': '该视频没有可用字幕；可在字幕页主动转写音频，完成后再生成总结，仍可直接下载视频'})
             return
         summarizer = resources.enter_context(VideoSummarizer())
         tokens = summarizer.summarize_stream(subtitle["full_text"], req.language)
@@ -71,11 +81,13 @@ def summarize_video(req: SummarizeRequest, reservation: UsageReservation = Depen
         ensure_active(reservation)
         yield ServerSentEvent(event="mindmap", data={"markdown": markdown})
         ensure_active(reservation)
-        snapshot = commit_usage(reservation.request_id, summary_result={'url': req.url, 'language': req.language, 'subtitle': subtitle, 'summary': ''.join(parts), 'mindmap': markdown})
+        snapshot = commit_usage(reservation.request_id, summary_result={'url': req.url, 'language': req.language, 'subtitle': subtitle, 'summary': ''.join(parts), 'mindmap': markdown, 'video_title': req.video_title, 'platform': req.platform})
         yield ServerSentEvent(event='quota', data=snapshot)
         yield ServerSentEvent(event="done", raw_data="[DONE]")
     except VideoError as exc:
         yield ServerSentEvent(event="error", data={"code": 'AI_FAILED', "message": str(exc)})
+    except HTTPException as exc:
+        yield ServerSentEvent(event='error',data={'code':exc.detail['code'],'message':exc.detail['error']})
     except QuotaError as exc:
         yield ServerSentEvent(event='error', data={'code': exc.code, 'message': str(exc)})
     except sqlite3.OperationalError as exc:

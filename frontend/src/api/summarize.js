@@ -60,8 +60,8 @@ async function stream(path, body, callbacks, signal) {
   await handleSSEStream(response,callbacks)
 }
 
-export function summarizeVideo(url,language='zh',callbacks={},signal) {
-  return stream('summarize',{url,language},callbacks,signal)
+export function summarizeVideo(url,language='zh',callbacks={},signal,metadata={}) {
+  return stream('summarize',{url,language,...metadata},callbacks,signal)
 }
 
 export async function fetchSummaryResult(url,language='zh',signal) {

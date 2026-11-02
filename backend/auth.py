@@ -45,7 +45,11 @@ def decode_token(token: str) -> dict:
 def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> AuthenticatedUser:
     if credentials is None:
         raise HTTPException(401, {"code": "AUTH_REQUIRED", "error": "请先登录后使用 AI 功能"}, headers={"WWW-Authenticate": "Bearer"})
-    payload = decode_token(credentials.credentials)
+    return authenticate_token(credentials.credentials)
+
+
+def authenticate_token(token: str) -> AuthenticatedUser:
+    payload = decode_token(token)
     session = database.get_session(payload["jti"])
     user = database.get_user_by_id(payload["sub"])
     if session is None or user is None or session["user_id"] != user["id"] or session["revoked_at"] is not None or session["expires_at"] <= time.time():

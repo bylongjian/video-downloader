@@ -19,6 +19,14 @@ class VideoError(ValueError):
     """可直接展示给用户的输入或上游错误。"""
 
 
+class DownloadCancelled(VideoError):
+    """后台下载已取消，不应交付文件。"""
+
+
+class DownloadLimitExceeded(VideoError):
+    """后台下载超过约定的单文件或空间限制。"""
+
+
 def validate_public_url(url: str) -> str:
     try:
         parsed = urlsplit(url)
@@ -63,7 +71,7 @@ YDL_OPTIONS = {"quiet": True, "no_warnings": True, "noplaylist": True, "socket_t
 
 class VideoDownloader:
     def __init__(self):
-        self.download_dir = Path(__file__).parent / "downloads"
+        self.download_dir = Path(os.getenv('DOWNLOAD_DIR', str(Path(__file__).parent / 'downloads')))
         self.ffmpeg_path = shutil.which("ffmpeg")
 
     def _extract(self, url: str, options: dict, download: bool = False) -> dict:
@@ -157,24 +165,95 @@ class VideoDownloader:
                 if path.is_dir() and time.time() - path.stat().st_mtime > 24 * 3600:
                     shutil.rmtree(path)
 
-    def download(self, url: str, format_id: str) -> dict:
+    def download(self, url: str, format_id: str, *, on_progress=None, should_cancel=None, max_bytes: int | None = None) -> dict:
         self.download_dir.mkdir(parents=True, exist_ok=True)
         task_dir = Path(tempfile.mkdtemp(prefix="task-", dir=self.download_dir)).resolve()
         completed = False
         warning = ""
         options = {"format": format_id, "outtmpl": str(task_dir / "media.%(ext)s"), "windowsfilenames": True,
                    "skip_unavailable_fragments": False, "concurrent_fragment_downloads": 4, "noprogress": True}
+        downloaded_tracks = {}
+        def check_cancelled():
+            if should_cancel is not None and should_cancel():
+                raise DownloadCancelled('下载已取消')
+        def progress(data):
+            check_cancelled()
+            track = data.get('filename', '')
+            downloaded_tracks[track] = data.get('downloaded_bytes', 0)
+            if max_bytes is not None and sum(downloaded_tracks.values()) > max_bytes:
+                raise DownloadLimitExceeded('下载文件超过本地队列的单文件大小限制')
+            if on_progress is not None:
+                total = data.get('total_bytes') or data.get('total_bytes_estimate')
+                downloaded = data.get('downloaded_bytes', 0)
+                on_progress({'stage': 'downloading', 'downloaded_bytes': downloaded,
+                    'total_bytes': total, 'total_is_estimate': not bool(data.get('total_bytes')) and bool(total),
+                    'speed_bytes_per_second': data.get('speed'), 'eta_seconds': data.get('eta'),
+                    'track_id': data.get('info_dict', {}).get('format_id') or Path(track).name,
+                    'percent': min(100, 100 * downloaded / total) if total else None})
+        def postprocess(data):
+            check_cancelled()
+            if on_progress is not None:
+                on_progress({'stage': 'merging', 'downloaded_bytes': None, 'total_bytes': None,
+                    'total_is_estimate': False, 'speed_bytes_per_second': None, 'eta_seconds': None,
+                    'track_id': None, 'percent': None})
+        if on_progress is not None or should_cancel is not None or max_bytes is not None:
+            options.update(progress_hooks=[progress], postprocessor_hooks=[postprocess])
+        if max_bytes is not None:
+            options['max_filesize'] = max_bytes
+            # 独立播放列表不受noplaylist保证：先只读单项身份，实际下载也不展开列表。
+            options.update(extract_flat='in_playlist',playlistend=1)
+            def check_background_info(info, *, incomplete=False):
+                if info.get('is_live') or info.get('live_status') in {'is_live','is_upcoming'}:
+                    raise VideoError('后台任务暂不支持直播，请使用普通单条视频链接')
+                if incomplete:
+                    return None
+                streams = info.get('requested_formats') or [info]
+                if any(item.get('section_start') or item.get('section_end') for item in [info, *streams]):
+                    raise VideoError('此片段需要外部下载器，请改用原单条下载')
+                if sum(item.get('filesize') or 0 for item in streams) > max_bytes:
+                    raise DownloadLimitExceeded('下载文件超过本地队列的单文件大小限制')
+                for stream in streams:
+                    protocol = stream.get('protocol') or urlsplit(stream.get('url','')).scheme
+                    if protocol not in {'http','https','m3u8_native','http_dash_segments'}:
+                        raise VideoError('此视频需要无法持续监控的外部下载器，请改用原单条下载')
+                    if protocol == 'm3u8_native':
+                        from yt_dlp.downloader.hls import HlsFD
+                        from yt_dlp.dependencies import Cryptodome
+                        try:
+                            manifest = stream.get('hls_media_playlist_data')
+                            if not manifest:
+                                response = remote_get(stream['url'],headers=stream.get('http_headers'))
+                                manifest = response.text
+                                stream['url'] = str(response.url)
+                        except httpx.HTTPError as exc:
+                            raise VideoError('无法读取视频媒体清单，请稍后重试') from exc
+                        if not HlsFD.can_download(manifest,stream) or ('#EXT-X-KEY:METHOD=AES-128' in manifest and not Cryptodome.AES):
+                            raise VideoError('此HLS需要外部下载器，请改用原单条下载')
+                        # 固定已检查的清单，禁止原生HLS在下载中回退到外部ffmpeg。
+                        stream['hls_media_playlist_data'] = manifest
+                return None
+            options['match_filter'] = check_background_info
         if self.ffmpeg_path:
             options.update(ffmpeg_location=self.ffmpeg_path, merge_output_format="mp4/mkv")
         elif "+" in format_id:
             options["format"] = "best[vcodec!=none][acodec!=none]"
             warning = "ffmpeg unavailable; downloaded available combined audio/video format"
         try:
+            check_cancelled()
+            if max_bytes is not None:
+                preflight = self._extract(url,{'format':options['format'],'extract_flat':'in_playlist','playlistend':1},download=False)
+                check_cancelled()
+                check_background_info(preflight)
             info = self._extract(url, options, download=True)
+            check_cancelled()
+            if max_bytes is not None and (info.get('filesize') or 0) > max_bytes:
+                raise DownloadLimitExceeded('下载文件超过本地队列的单文件大小限制')
             candidates = [path for path in task_dir.glob("media.*") if path.suffix not in {".part", ".ytdl", ".temp"} and not re.search(r"\.f[^.]+\.", path.name)]
             final_path = Path(info["filepath"]).resolve() if info.get("filepath") else (candidates[0] if len(candidates) == 1 else None)
             if not final_path or final_path.parent != task_dir or not final_path.is_file():
                 raise VideoError("下载未生成完整文件，请重试")
+            if max_bytes is not None and final_path.stat().st_size > max_bytes:
+                raise DownloadLimitExceeded('下载文件超过本地队列的单文件大小限制')
             title = re.sub(r'[\\/*?:"<>|\r\n]', "_", info.get("title") or "video").strip(" .")[:100] or "video"
             completed = True
             return {"filepath": str(final_path), "filename": title + final_path.suffix, "task_dir": str(task_dir), "warning": warning}

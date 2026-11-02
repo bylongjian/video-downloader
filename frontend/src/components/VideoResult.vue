@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
-const props=defineProps({video:{type:Object,required:true},downloading:Boolean,status:String,error:String,warning:String})
-defineEmits(['download'])
+const props=defineProps({video:{type:Object,required:true},downloading:Boolean,queueing:Boolean,status:String,error:String,warning:String})
+defineEmits(['download','background-download'])
 const selected=ref(props.video.formats[0]?.format_id || '')
 const coverFailed=ref(false)
 const format=computed(()=>props.video.formats.find(item=>item.format_id===selected.value))
@@ -32,6 +32,7 @@ const date=computed(()=>props.video.upload_date?.replace(/^(\d{4})(\d{2})(\d{2})
         </div>
         <p v-if="!video.formats.length" class="inline-error">该视频暂无可下载格式，请尝试其他视频。</p>
         <button class="button primary full download-button" :disabled="!selected||downloading" @click="$emit('download',selected)"><span v-if="downloading" class="spinner"></span><Icon v-else name="download" /><span>{{downloading?'正在下载…':'下载视频'}}</span><span v-if="format">{{size(format.filesize || format.filesize_approx)}}</span></button>
+        <button class="button outline full" :disabled="!selected||queueing" @click="$emit('background-download',selected)">{{queueing?'正在加入队列…':'后台下载 · 查看实时进度'}}</button>
         <div class="download-status" aria-live="polite"><p v-if="status">{{status}}</p><p v-if="warning" class="inline-error">{{warning}}</p><div v-if="error" class="inline-error" role="alert">{{error}}<button class="text-button tiny" @click="$emit('download',selected)">重新下载</button></div></div>
         <p class="download-hint"><Icon name="shield-check" />自动选择合适的下载方式</p>
       </div>

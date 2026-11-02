@@ -5,6 +5,7 @@ __pycache__/
 .env
 backend/downloads/
 backend/data/
+backend/models/
 *.db-wal
 *.db-shm
 frontend/node_modules/

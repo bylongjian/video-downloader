@@ -37,6 +37,9 @@ class QuotaError(Exception):
 
 
 def _snapshot(db, user_id: int, now: int) -> dict:
+    from .membership import get_entitlements
+    entitlement = get_entitlements(user_id,now,db)
+    limits = entitlement['limits']
     current = datetime.fromtimestamp(now, SHANGHAI)
     date = current.date().isoformat()
     result = {'date': date, 'timezone': 'Asia/Shanghai', 'server_time': current.isoformat(),
@@ -45,11 +48,17 @@ def _snapshot(db, user_id: int, now: int) -> dict:
         SUM(status='succeeded') AS used,
         SUM(status='reserved' AND expires_at>?) AS reserved
         FROM ai_usage_requests WHERE user_id=? AND quota_date=? GROUP BY kind""", (now, user_id, date)).fetchall()
-    for kind, limit in LIMITS.items():
+    for kind in LIMITS:
+        limit = limits[kind]
         result[kind] = {'limit': limit, 'used': 0, 'reserved': 0, 'remaining': limit}
     for row in counts:
-        limit = LIMITS[row['kind']]
-        result[row['kind']] = {'limit': limit, 'used': row['used'], 'reserved': row['reserved'], 'remaining': limit - row['used'] - row['reserved']}
+        limit = limits[row['kind']]
+        result[row['kind']] = {'limit': limit, 'used': row['used'], 'reserved': row['reserved'], 'remaining': max(0,limit - row['used'] - row['reserved'])}
+    from .extension_quota import get_extension_quota
+    extras = get_extension_quota(user_id,db=db,now=now)
+    result.update(translation=extras['translation'],transcription=extras['transcription'])
+    result['membership'] = {'tier':entitlement['tier'],'payment_mode':entitlement['payment_mode'],
+        'expires_at':datetime.fromtimestamp(entitlement['expires_at'],SHANGHAI).isoformat() if entitlement['expires_at'] is not None else None}
     return result
 
 

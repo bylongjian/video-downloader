@@ -1,4 +1,5 @@
 import socket
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,6 +15,10 @@ def public_dns(monkeypatch, tmp_path_factory):
     monkeypatch.delenv("ALLOW_PROXY_FAKE_IP", raising=False)
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path_factory.mktemp("accounts") / "accounts.db"))
     monkeypatch.setenv("JWT_SECRET", "test-only-secret-with-at-least-32-bytes")
+    monkeypatch.setattr('backend.tasks._stopping',threading.Event())
+    monkeypatch.setattr('backend.tasks._accepting',True)
+    for name in ('STRIPE_SECRET_KEY','STRIPE_WEBHOOK_SECRET','STRIPE_PRICE_ID_VIP_30D','ASR_ENABLED','ASR_MODEL_DIR'):
+        monkeypatch.delenv(name,raising=False)
 
 
 @pytest.fixture

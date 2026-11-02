@@ -1,0 +1,14 @@
+services:
+  backend:
+    build:
+      args:
+        INSTALL_ASR: "true"
+    environment:
+      ASR_ENABLED: "true"
+      ASR_MODEL_DIR: /app/backend/models/faster-whisper-small
+      ASR_CPU_THREADS: "4"
+    volumes:
+      - models:/app/backend/models
+
+volumes:
+  models:

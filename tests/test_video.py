@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 from pathlib import Path
+import pytest
 import socket
 
 import httpx
@@ -148,3 +149,66 @@ def test_failed_download_removes_partial_files(client, ydl, monkeypatch, tmp_pat
     response = client.post("/api/download", json={"url": URL, "format_id": "18"})
     assert response.status_code == 400
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('stop', ['cancel', 'size'])
+def test_background_download_stops_and_removes_partial_files(ydl, tmp_path, stop):
+    from backend.downloader import VideoDownloader, VideoError
+
+    downloader = VideoDownloader()
+    downloader.download_dir = tmp_path
+    cancel = [False]
+    observed = []
+    def extract(url, download, options):
+        if not download:
+            return {'protocol':'https','url':url}
+        path = Path(options['outtmpl']).parent / 'media.part'
+        path.write_bytes(b'partial')
+        options['progress_hooks'][0]({'status': 'downloading', 'downloaded_bytes': 3, 'total_bytes': 10, 'filename': str(path)})
+        cancel[0] = stop == 'cancel'
+        options['progress_hooks'][0]({'status': 'downloading', 'downloaded_bytes': 11, 'total_bytes': 11, 'filename': str(path)})
+        raise AssertionError('取消或超限后不能继续下载')
+    ydl.extract.side_effect = extract
+    with pytest.raises(VideoError):
+        downloader.download(URL, '18', on_progress=observed.append, should_cancel=lambda: cancel[0], max_bytes=10)
+    assert observed[0]['downloaded_bytes'] == 3
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('metadata', [{'_type':'playlist','entries':[]},{'is_live':True,'protocol':'https'},{'filesize':100,'protocol':'https'},{'protocol':'m3u8','url':'https://example.com/stream.m3u8'},{'protocol':'https','section_start':29,'section_end':39.7},{'requested_formats':[{'protocol':'https','section_end':10}]}])
+def test_background_rejects_playlist_live_and_known_oversize_before_transfer(ydl, tmp_path, metadata):
+    from backend.downloader import VideoDownloader, VideoError
+
+    downloader = VideoDownloader()
+    downloader.download_dir = tmp_path
+    def extract(url, download, options):
+        assert download is False, '队列拒绝前不应启动媒体下载'
+        return metadata
+    ydl.extract.side_effect = extract
+    with pytest.raises(VideoError):
+        downloader.download(URL,'best',max_bytes=10)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_background_hls_uses_checked_redirect_url_for_relative_fragments(ydl, tmp_path, monkeypatch):
+    from backend.downloader import VideoDownloader
+
+    downloader = VideoDownloader()
+    downloader.download_dir = tmp_path
+    manifest = '#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n'
+    final_url = 'https://cdn.example.com/redirected/media.m3u8'
+    monkeypatch.setattr('backend.downloader.remote_get', lambda url, **kwargs: httpx.Response(
+        200, text=manifest, request=httpx.Request('GET', final_url)))
+    def extract(url, download, options):
+        info = {'protocol':'m3u8_native','url':'https://cdn.example.com/original/media.m3u8'}
+        if not download:
+            return info
+        options['match_filter'](info)
+        assert info['url'] == final_url, '原生HLS必须按已核对的最终清单地址解析相对片段'
+        assert info['hls_media_playlist_data'] == manifest
+        path = Path(options['outtmpl']).parent / 'media.mp4'
+        path.write_bytes(b'video')
+        return {**info,'filepath':str(path),'title':'hls'}
+    ydl.extract.side_effect = extract
+    result = downloader.download(URL, 'best', max_bytes=100)
+    assert Path(result['filepath']).read_bytes() == b'video'

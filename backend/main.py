@@ -33,25 +33,36 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("请在 backend/.env 配置至少 32 字节的随机 JWT_SECRET 后重启")
     await run_in_threadpool(init_db)
     await run_in_threadpool(release_expired_usage)
+    from .extension_quota import release_expired_extension_usage
+    from .billing import replay_pending_events
+    await run_in_threadpool(release_expired_extension_usage)
+    from . import tasks
+    owns_workers = await tasks.start_workers()
     async def cleanup():
         while True:
-            await run_in_threadpool(downloader.cleanup_expired)
             try:
+                await run_in_threadpool(downloader.cleanup_expired)
                 await run_in_threadpool(release_expired_usage)
+                await run_in_threadpool(release_expired_extension_usage)
+                await run_in_threadpool(replay_pending_events)
             except sqlite3.OperationalError:
                 logging.getLogger(__name__).exception('额度清理暂不可用，将在下一轮重试')
+            except OSError:
+                logging.getLogger(__name__).exception('临时文件清理暂不可用，将在下一轮重试')
             await asyncio.sleep(60)
     task = asyncio.create_task(cleanup())
     try:
         yield
     finally:
+        if owns_workers:
+            await tasks.stop_workers()
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
 
 
 app = FastAPI(title="SaveAny 视频下载 API", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","), allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"], expose_headers=["Content-Disposition", "X-Download-Warning"])
+app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","), allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "Authorization"], expose_headers=["Content-Disposition", "X-Download-Warning"])
 
 
 class ParseRequest(BaseModel):
@@ -146,3 +157,20 @@ app.include_router(router)
 from .api_auth import router as auth_router
 
 app.include_router(auth_router)
+from .api_history import router as history_router
+
+app.include_router(history_router)
+from .api_tasks import router as tasks_router
+
+app.include_router(tasks_router)
+from .api_progress import router as progress_router
+
+app.include_router(progress_router)
+from .api_subtitles import router as subtitles_router
+from .api_transcriptions import router as transcriptions_router
+
+app.include_router(subtitles_router)
+app.include_router(transcriptions_router)
+from .api_billing import router as billing_router
+
+app.include_router(billing_router)

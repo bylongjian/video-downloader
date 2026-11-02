@@ -1,6 +1,7 @@
 """账号和会话使用短连接；模型执行期间不持有数据库连接。"""
 
 import os
+import hashlib
 import json
 import secrets
 import sqlite3
@@ -68,6 +69,8 @@ def init_db():
                 PRIMARY KEY(user_id, url, language)
             );
         """)
+    from .migrations import migrate_database
+    migrate_database()
 
 
 def get_user_by_email(email: str) -> dict | None:
@@ -109,13 +112,19 @@ def revoke_session(session_id: str):
 
 def get_summary_result(user_id: int, url: str, language: str) -> dict | None:
     with get_db() as db:
-        row = db.execute('SELECT result_json,updated_at FROM summary_results WHERE user_id=? AND url=? AND language=?', (user_id, url, language)).fetchone()
-        return {**json.loads(row['result_json']), 'saved_at': row['updated_at']} if row else None
+        row = db.execute('SELECT result_json,updated_at,result_id FROM summary_results WHERE user_id=? AND url=? AND language=?', (user_id, url, language)).fetchone()
+        return {**json.loads(row['result_json']), 'saved_at': row['updated_at'], 'result_id': row['result_id']} if row else None
 
 
 def save_summary_result(db: sqlite3.Connection, user_id: int, result: dict, now: int):
     # 使用计次事务的连接，确保保存失败时成功次数也回滚。
     content = {name: result[name] for name in ('subtitle', 'summary', 'mindmap')}
-    db.execute('''INSERT INTO summary_results(user_id,url,language,result_json,updated_at) VALUES(?,?,?,?,?)
-        ON CONFLICT(user_id,url,language) DO UPDATE SET result_json=excluded.result_json,updated_at=excluded.updated_at''',
-        (user_id, result['url'], result['language'], json.dumps(content, ensure_ascii=False), now))
+    db.execute('''INSERT INTO summary_results(user_id,url,language,result_json,updated_at,result_id,video_title,platform) VALUES(?,?,?,?,?,?,?,?)
+        ON CONFLICT(user_id,url,language) DO UPDATE SET result_json=excluded.result_json,updated_at=excluded.updated_at,
+        video_title=CASE WHEN excluded.video_title='' THEN summary_results.video_title ELSE excluded.video_title END,
+        platform=CASE WHEN excluded.platform='' THEN summary_results.platform ELSE excluded.platform END''',
+        (user_id, result['url'], result['language'], json.dumps(content, ensure_ascii=False), now,
+         secrets.token_urlsafe(24), result.get('video_title', ''), result.get('platform', '')))
+    source = db.execute('SELECT result_id FROM summary_results WHERE user_id=? AND url=? AND language=?',(user_id,result['url'],result['language'])).fetchone()[0]
+    source_hash = hashlib.sha256(json.dumps(content['subtitle'],ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    db.execute("DELETE FROM subtitle_translations WHERE user_id=? AND source_kind='summary' AND source_id=? AND source_hash<>?",(user_id,source,source_hash))

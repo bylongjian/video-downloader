@@ -1,0 +1,42 @@
+# 只发送构建所需目录，隔离文档、Git 与本机工具配置。
+*
+!backend/
+!backend/**
+!frontend/
+!frontend/**
+!deploy/
+!deploy/nginx.conf
+
+# 真实配置、凭据和本机数据不能进入任何构建阶段。
+**/.env
+**/.env.*
+**/*.env
+**/*.pem
+**/*.key
+**/cookies*.txt
+**/.npmrc
+**/data
+**/downloads
+**/models
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-*
+**/*.sqlite3-*
+**/backups
+
+# 构建时安装锁定依赖，不复制宿主环境与产物。
+**/node_modules
+**/dist
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.git
+**/.agents
+**/.codex
+**/tests
