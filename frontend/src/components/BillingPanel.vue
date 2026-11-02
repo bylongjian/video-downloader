@@ -76,7 +76,11 @@ async function checkout(){
     if(!current(run,pending.signal))return
     // 只跳转到服务端创建并返回的支付会话，不从回跳参数或本地缓存授予权益。
     window.location.assign(result.checkout_url)
-  } catch(cause){if(current(run,pending.signal))checkoutError.value=cause.message}
+  } catch(cause){
+    if(!current(run,pending.signal))return
+    if(['PAYMENT_PROVIDER_REJECTED','PAYMENT_PRICE_MISMATCH','ORDER_NOT_PAYABLE'].includes(cause.code))checkoutRequestKey=''
+    checkoutError.value=cause.message
+  }
   finally {if(current(run,pending.signal))creating.value=false}
 }
 
@@ -103,7 +107,7 @@ onUnmounted(()=>{revision++;orderRevision++;controller?.abort();checkoutControll
     <div v-if="plansError" class="billing-message inline-error" role="alert"><p>{{plansError}}</p><button class="text-button" @click="loadPlans(revision,controller.signal)">重试读取套餐</button></div>
     <template v-if="plans">
       <div class="billing-message" role="status"><strong>{{plans.payment_mode==='test'?'Stripe 测试环境':plans.payment_mode==='live'?'正式支付环境':'支付环境未就绪'}}</strong><p>{{plans.payment_mode==='test'?'当前是测试支付，测试权益仅在测试环境生效。':'付款状态与会员权益均以服务端确认结果为准。'}}</p><p v-if="!plans.available">支付尚未配置完成，当前无法购买会员。需管理员准备支付密钥、签名回调、一次性套餐 Price 和回跳地址。</p></div>
-      <article v-if="plan" class="billing-plan"><h2>VIP · {{plan.duration_days}} 天</h2><p class="billing-price">{{money(plan.amount_minor,plan.currency)}}<span class="muted"> / 一次购买，不自动续费</span></p><p>每天 {{plan.limits.summary}} 次总结、{{plan.limits.chat}} 次问答、{{plan.limits.translation}} 次翻译、{{plan.limits.transcription/60}} 分钟转写；单条转写最多 {{plan.transcription_single_limit/60}} 分钟。</p><p class="muted">续购从当前有效到期时间起延长；到期恢复免费额度，当天用量不清零。</p><button class="button primary" :disabled="!plans.available||creating||!authReady" @click="checkout"><span v-if="creating" class="spinner"></span>{{creating?'正在创建支付会话…':!plans.available?'支付未配置':!user?'登录后购买':plans.payment_mode==='test'?'前往测试 Checkout':'前往 Checkout'}}</button><p v-if="checkoutError" class="inline-error" role="alert">{{checkoutError}} 点击购买会重试原下单请求。</p></article>
+      <article v-if="plan" class="billing-plan"><h2>VIP · {{plan.duration_days}} 天</h2><p class="billing-price">{{money(plan.amount_minor,plan.currency)}}<span class="muted"> / 一次购买，不自动续费</span></p><p>每天 {{plan.limits.summary}} 次总结、{{plan.limits.chat}} 次问答、{{plan.limits.translation}} 次翻译、{{plan.limits.transcription/60}} 分钟转写；单条转写最多 {{plan.transcription_single_limit/60}} 分钟。</p><p class="muted">续购从当前有效到期时间起延长；到期恢复免费额度，当天用量不清零。</p><button class="button primary" :disabled="!plans.available||creating||!authReady" @click="checkout"><span v-if="creating" class="spinner"></span>{{creating?'正在创建支付会话…':!plans.available?'支付未配置':!user?'登录后购买':plans.payment_mode==='test'?'前往测试 Checkout':'前往 Checkout'}}</button><p v-if="checkoutError" class="inline-error" role="alert">{{checkoutError}} {{checkoutRequestKey?'点击购买会重试原下单请求。':'再次点击购买会创建新的下单请求。'}}</p></article>
     </template>
     <div v-if="!authReady||!user" class="billing-message" role="status"><h2>{{!authReady?'正在恢复登录…':authError?'暂时无法确认登录状态':'登录后查看本人订单'}}</h2><p>{{authError||'订单只对所属账号可见，回跳地址不会直接开通会员。'}}</p><button v-if="authReady" class="button outline" @click="authError?restoreSession():emit('login')">{{authError?'重试恢复登录':'登录 / 注册'}}</button></div>
     <template v-else>
