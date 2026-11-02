@@ -1,3 +1,10 @@
-﻿<template>
-<section class="section faq-section" id="faq"><div class="container faq-grid"><div><p class="kicker">A FEW THINGS TO KNOW</p><h2>你可能还想知道</h2><p>从这里，开始放心使用。</p><a class="text-button" href="#main">回到顶部<Icon name="arrow-up-right" /></a></div><div class="faq-items"><details><summary>支持哪些视频平台？<Icon name="plus" /></summary><p>产品目标覆盖 yt-dlp 支持的 1800+ 平台，包括 Bilibili、YouTube、抖音、TikTok、X 和 Instagram。具体可用性取决于平台限制、视频权限和当前网络。</p></details><details><summary>AI 总结是如何生成的？<Icon name="plus" /></summary><p>优先提取平台字幕，再通过 DeepSeek 生成摘要、导图与问答。没有字幕时可手动发起本地转写，是否可用取决于服务端模型配置；视频下载仍可继续。转写单条最多 30 分钟，翻译和转写分别使用独立额度。</p></details><details><summary>需要注册账号才能下载吗？<Icon name="plus" /></summary><p>视频解析和下载无需登录。AI 功能需要账号；免费账号每天可成功总结 3 次、问答 10 次、翻译 3 次、转写 60 分钟。额度按北京时间零点恢复，失败不计次，恢复已保存的结果不重复计次。</p></details><details><summary>VIP 有哪些权益，会自动续费吗？<Icon name="plus" /></summary><p>VIP 每天可成功总结 30 次、问答 100 次、翻译 20 次、转写 240 分钟，单条转写最多 30 分钟。一次购买 30 天，不自动续费；续购从当前有效到期时间起延长，到期恢复免费上限，当天用量不清零。当前为 Stripe 测试支付，缺少支付配置时无法购买；付款和权益都以服务端确认为准，从支付页面返回不会直接开通。</p></details><details><summary>手机可以使用吗？<Icon name="plus" /></summary><p>可以。页面会根据屏幕宽度调整布局，手机端的视频与 AI 面板上下排列，所有主要功能均可点击体验。</p></details></div></div></section>
+<script setup>
+import {faqItems,contentUpdated} from '../content/product.js'
+</script>
+
+<template>
+  <section class="section faq-section" id="faq"><div class="container faq-grid">
+    <div><p class="kicker">A FEW THINGS TO KNOW</p><h2>视频下载与 AI 总结常见问题</h2><p>先了解使用条件，再开始处理视频。</p><p class="muted tiny">更新于 <time :datetime="contentUpdated">{{contentUpdated}}</time></p><a class="text-button" href="/guide/">阅读完整使用指南<Icon name="arrow-up-right" /></a></div>
+    <div class="faq-items"><details v-for="item in faqItems" :key="item.question"><summary>{{item.question}}<Icon name="plus" /></summary><p>{{item.answer}}</p></details></div>
+  </div></section>
 </template>

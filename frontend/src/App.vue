@@ -3,11 +3,8 @@ import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import AppHeader from './components/AppHeader.vue'
 import AppFooter from './components/AppFooter.vue'
 import HeroSection from './components/HeroSection.vue'
-import FeatureSection from './components/FeatureSection.vue'
-import HowToSection from './components/HowToSection.vue'
-import PricingSection from './components/PricingSection.vue'
-import FaqSection from './components/FaqSection.vue'
-import BottomCta from './components/BottomCta.vue'
+import HomeContent from './components/HomeContent.vue'
+import {updatePageMetadata} from './pageMetadata.js'
 import VideoResult from './components/VideoResult.vue'
 import VideoSummary from './components/VideoSummary.vue'
 import AuthModal from './components/AuthModal.vue'
@@ -37,18 +34,18 @@ let historyController
 function openHistory(navigate=true){
   cancel();billingVisible.value=false;queueVisible.value=false;historyVisible.value=true;workbench.value=false;historyDetail.value=null;historyError.value='';historyLoading.value=false
   if(navigate)history.pushState({},'','/history?kind='+historyKind.value)
-  document.title='我的历史 · SaveAny';window.scrollTo(0,0)
+  updatePageMetadata();window.scrollTo(0,0)
 }
 function openQueue(navigate=true){
   cancel();billingVisible.value=false;queueVisible.value=true;historyVisible.value=false;historyDetail.value=null;workbench.value=false;queueTaskView.value=null;queueTaskError.value=''
   if(navigate)history.pushState({},'','/queue')
-  document.title='批量任务 · SaveAny';window.scrollTo(0,0)
+  updatePageMetadata();window.scrollTo(0,0)
 }
 function openBilling(navigate=true){
   cancel();billingVisible.value=true;queueVisible.value=false;historyVisible.value=false;workbench.value=false;queueTaskView.value=null
   if(navigate){billingOrderId.value='';history.pushState({},'','/billing')}
   else billingOrderId.value=new URLSearchParams(location.search).get('order_id')||''
-  document.title='会员与订单 · SaveAny';window.scrollTo(0,0)
+  updatePageMetadata();window.scrollTo(0,0)
 }
 async function openTaskResult({id}){
   historyController?.abort();const controller=new AbortController();historyController=controller
@@ -74,6 +71,7 @@ async function openHistoryItem(kind,id,navigate=true){
   const version=auth.sessionVersion.value
   billingVisible.value=false;queueVisible.value=false;historyVisible.value=true;workbench.value=false;historyKind.value=kind;historyDetail.value=null;historyLoading.value=true;historyError.value=''
   if(navigate)history.pushState({},'',`/history/${kind}/${encodeURIComponent(id)}`)
+  updatePageMetadata()
   try {const detail=await fetchHistoryDetail(kind,id,controller.signal);if(!controller.signal.aborted&&version===auth.sessionVersion.value)historyDetail.value=detail}
   catch(cause){if(!controller.signal.aborted&&version===auth.sessionVersion.value)historyError.value=cause.message}
   finally{if(historyController===controller)historyLoading.value=false}
@@ -123,7 +121,7 @@ async function backgroundDownload(formatId){
 function cancel() { parseController?.abort(); downloadController?.abort();historyController?.abort() }
 function home() {
   cancel();billingVisible.value=false;queueVisible.value=false;queueTaskView.value=null;historyVisible.value=false;historyDetail.value=null; workbench.value=false; video.value=null; loading.value=false
-  history.pushState({},'', '/'); document.title='SaveAny · 好视频，值得留下'; window.scrollTo(0,0)
+  history.pushState({},'', '/'); updatePageMetadata(); window.scrollTo(0,0)
 }
 async function start() { if(workbench.value||historyVisible.value||queueVisible.value||billingVisible.value) home(); await nextTick(); hero.value.focus() }
 async function example() { if(workbench.value||historyVisible.value||queueVisible.value||billingVisible.value) home(); await nextTick(); hero.value.example('bilibili'); window.scrollTo(0,0) }
@@ -134,7 +132,7 @@ async function parse(url, navigate=true,options={}) {
   downloading.value=false; downloadStatus.value='';downloadError.value='';downloadWarning.value=''
   if(!workbench.value&&navigate) history.pushState({},'', '/workbench?url='+encodeURIComponent(url))
   else if(navigate) history.replaceState({},'', '/workbench?url='+encodeURIComponent(url))
-  workbench.value=true; document.title='视频工作台 · SaveAny'; window.scrollTo(0,0)
+  workbench.value=true; updatePageMetadata(); window.scrollTo(0,0)
   try {
     const result=await parseVideo(url,controller.signal)
     if(parseController===controller) video.value=result.data
@@ -174,6 +172,7 @@ function popstate() {
   else if(location.pathname.startsWith('/history')){openHistory(false);const match=location.pathname.match(/^\/history\/(summary|download)\/([^/]+)$/);if(match&&auth.user.value)openHistoryItem(match[1],match[2],false)}
   else if(location.pathname.startsWith('/workbench')&&url) parse(url,false)
   else {cancel();billingVisible.value=false;queueVisible.value=false;historyVisible.value=false;historyDetail.value=null;workbench.value=false;video.value=null;loading.value=false}
+  updatePageMetadata()
 }
 onMounted(()=>{auth.restoreSession();window.addEventListener('popstate',popstate);window.addEventListener('focus',focus);if(workbench.value&&currentUrl.value)parse(currentUrl.value,false)})
 onUnmounted(()=>{cancel();clearTimeout(quotaTimer);window.removeEventListener('popstate',popstate);window.removeEventListener('focus',focus)})
@@ -193,7 +192,7 @@ onUnmounted(()=>{cancel();clearTimeout(quotaTimer);window.removeEventListener('p
       <VideoSummary v-if="historyDetail.kind==='summary'" :key="historyDetail.id+':'+auth.sessionVersion.value" :video-url="historyDetail.url" :video-title="historyDetail.video_title" :platform="historyDetail.platform" :language="historyDetail.language" :initial-result="historyDetail.result" restore-only @saved="historyResultSaved" @login="authVisible=true" @notice="openBilling" />
     </section>
   </div></main>
-  <main v-else-if="!workbench" id="main"><HeroSection ref="hero" @parse="parse" @notice="showNotice" /><FeatureSection @example="example" /><HowToSection /><PricingSection @start="start" @upgrade="openBilling" /><FaqSection /><BottomCta /></main>
+  <main v-else-if="!workbench" id="main"><HomeContent ref="hero" @parse="parse" @notice="showNotice" @example="example" @start="start" @upgrade="openBilling" /></main>
   <main v-else id="main" class="workspace-main"><div class="container">
     <div class="workspace-topline"><a href="/" class="back-link" @click.prevent="home"><Icon name="arrow-left" />返回首页</a><div class="prototype-label"><span class="status-dot"></span>从保存，到理解</div></div>
     <HeroSection ref="hero" compact :initial-url="currentUrl" :loading="loading" @parse="parse" @notice="showNotice" />

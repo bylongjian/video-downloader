@@ -23,6 +23,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        VITE_SITE_URL: ${VITE_SITE_URL:-}
     depends_on:
       backend:
         condition: service_healthy
